@@ -1,0 +1,13 @@
+{
+  "name": "maracas-client",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Connects to the maracas over BLE and shows a live stream of accelerometer and gyro data",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@abandonware/noble": "^1.9.2-26"
+  }
+}

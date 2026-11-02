@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maracas Live</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #fff; --text: #1d1d1b; --muted: #77756f; --grid: #e6e4df;
+    --x: #d1495b; --y: #2e86ab; --z: #3a9d5d; --shake: #e09f3e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --panel: #20201f; --text: #ecebe7; --muted: #8f8d87; --grid: #33322f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
+         font: 14px/1.4 system-ui, -apple-system, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin-bottom: 20px; }
+  .device { background: var(--panel); border-radius: 10px; padding: 16px; margin-bottom: 16px; max-width: 1100px; }
+  .head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .head h2 { font-size: 16px; margin: 0; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--z); }
+  .device.off .dot { background: var(--muted); }
+  .device.off { opacity: .6; }
+  .rate { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .label { display: flex; gap: 14px; color: var(--muted); font-size: 12px; margin: 10px 0 4px; }
+  .label b { font-weight: 600; color: var(--text); margin-right: auto; }
+  .k::before { content: ""; display: inline-block; width: 10px; height: 2px; margin-right: 5px; vertical-align: middle; background: currentColor; }
+  canvas { width: 100%; height: 130px; display: block; }
+  .meter { height: 10px; background: var(--grid); border-radius: 5px; overflow: hidden; }
+  .meter div { height: 100%; width: 0; background: var(--shake); transition: width 60ms linear; }
+  #empty { color: var(--muted); }
+</style>
+</head>
+<body>
+<h1>Maracas</h1>
+<div class="sub" id="status">connecting to server...</div>
+<div id="empty">Waiting for a maraca to connect. Shake it to wake it up, and check the terminal.</div>
+<div id="devices"></div>
+
+<template id="tpl">
+  <div class="device">
+    <div class="head"><span class="dot"></span><h2></h2><span class="rate"></span></div>
+    <div class="label"><b>Shake</b><span class="shakeval"></span></div>
+    <div class="meter"><div></div></div>
+    <div class="label"><b>Accelerometer (m/s²)</b>
+      <span class="k" style="color:var(--x)">x</span><span class="k" style="color:var(--y)">y</span><span class="k" style="color:var(--z)">z</span></div>
+    <canvas class="acc"></canvas>
+    <div class="label"><b>Gyroscope (rad/s)</b>
+      <span class="k" style="color:var(--x)">x</span><span class="k" style="color:var(--y)">y</span><span class="k" style="color:var(--z)">z</span></div>
+    <canvas class="gyro"></canvas>
+  </div>
+</template>
+
+<script>
+const HISTORY = 400;          // samples kept per device (~8s at 50Hz)
+const ACC_RANGE = 160;        // ±16g in m/s²; plots autoscale within this
+const GYRO_RANGE = 35;        // ±2000 dps in rad/s
+const devices = new Map();
+
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function getDevice(name) {
+  if (devices.has(name)) return devices.get(name);
+  const el = document.getElementById("tpl").content.firstElementChild.cloneNode(true);
+  el.querySelector("h2").textContent = name;
+  document.getElementById("devices").appendChild(el);
+  document.getElementById("empty").hidden = true;
+  const d = { el, samples: [], times: [], dirty: true,
+              acc: el.querySelector(".acc"), gyro: el.querySelector(".gyro"),
+              meter: el.querySelector(".meter div"), shakeval: el.querySelector(".shakeval"),
+              rate: el.querySelector(".rate") };
+  devices.set(name, d);
+  return d;
+}
+
+function draw(canvas, samples, keys, maxRange) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  // autoscale to the biggest value on screen, with a floor so noise stays flat
+  let peak = maxRange / 8;
+  for (const s of samples) for (const k of keys) peak = Math.max(peak, Math.abs(s[k]));
+  peak = Math.min(peak, maxRange);
+  const y = (v) => h / 2 - (v / peak) * (h / 2 - 4);
+
+  ctx.strokeStyle = css("--grid"); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+  ctx.fillStyle = css("--muted"); ctx.font = "11px system-ui";
+  ctx.fillText(`±${peak.toFixed(1)}`, 4, 12);
+
+  const colors = [css("--x"), css("--y"), css("--z")];
+  keys.forEach((k, i) => {
+    ctx.strokeStyle = colors[i]; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    samples.forEach((s, j) => {
+      const px = (j / (HISTORY - 1)) * w;
+      j ? ctx.lineTo(px, y(s[k])) : ctx.moveTo(px, y(s[k]));
+    });
+    ctx.stroke();
+  });
+}
+
+function frame() {
+  for (const d of devices.values()) {
+    if (!d.dirty) continue;
+    d.dirty = false;
+    draw(d.acc, d.samples, ["ax", "ay", "az"], ACC_RANGE);
+    draw(d.gyro, d.samples, ["gx", "gy", "gz"], GYRO_RANGE);
+    const last = d.samples[d.samples.length - 1];
+    if (last) {
+      d.meter.style.width = Math.min(100, (last.shake / 30) * 100) + "%";
+      d.shakeval.textContent = last.shake.toFixed(1) + " m/s²";
+    }
+    const now = performance.now();
+    d.times = d.times.filter((t) => now - t < 1000);
+    d.rate.textContent = `${d.times.length} Hz`;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+const es = new EventSource("/events");
+const status = document.getElementById("status");
+es.onopen = () => (status.textContent = "server connected");
+es.onerror = () => (status.textContent = "server not reachable, retrying...");
+
+es.addEventListener("sample", (e) => {
+  const s = JSON.parse(e.data);
+  const d = getDevice(s.name);
+  d.el.classList.remove("off");
+  d.samples.push(s);
+  if (d.samples.length > HISTORY) d.samples.shift();
+  d.times.push(performance.now());
+  d.dirty = true;
+});
+
+es.addEventListener("status", (e) => {
+  const { name, connected } = JSON.parse(e.data);
+  const d = getDevice(name);
+  d.el.classList.toggle("off", !connected);
+  if (!connected) { d.times = []; d.dirty = true; }
+});
+</script>
+</body>
+</html>
